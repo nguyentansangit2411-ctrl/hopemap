@@ -145,3 +145,21 @@ CREATE TYPE report_category AS ENUM (
 ALTER TABLE reports
   ALTER COLUMN category TYPE report_category
   USING category::report_category;
+
+-- Migration: Function to find nearby reports using PostGIS
+CREATE OR REPLACE FUNCTION find_nearby_reports(
+  input_lat FLOAT,
+  input_lng FLOAT,
+  radius_meters FLOAT,
+  since TIMESTAMPTZ
+)
+RETURNS TABLE(id UUID) AS $$
+  SELECT id FROM reports
+  WHERE created_at >= since
+  AND ST_DWithin(
+    location::geography,
+    ST_MakePoint(input_lng, input_lat)::geography,
+    radius_meters
+  )
+  LIMIT 1;
+$$ LANGUAGE sql STABLE;

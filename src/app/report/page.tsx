@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Camera, MapPin, Send, Loader2 } from 'lucide-react';
-import { UserButton, useAuth } from '@clerk/nextjs';
+import { UserButton } from '@clerk/nextjs';
 import NotificationBell from '@/components/NotificationBell';
 import toast from 'react-hot-toast';
 
@@ -14,7 +14,6 @@ const CATEGORIES = [
 ];
 
 export default function ReportPage() {
-  const { userId } = useAuth();
   const [loading, setLoading] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [formData, setFormData] = useState({
@@ -25,8 +24,8 @@ export default function ReportPage() {
     lng: '',
     manualAddress: '',
   });
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [image, setImage] = useState<File | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const handleLocation = () => {
@@ -60,12 +59,12 @@ export default function ReportPage() {
         const { processAndBlurFaces } = await import('@/lib/imageUtils');
         const blurredBlob = await processAndBlurFaces(file);
         const blurredFile = new File([blurredBlob], file.name, { type: blurredBlob.type });
-        setImage(blurredFile);
+        setImageFile(blurredFile);
         setPreviewUrl(URL.createObjectURL(blurredBlob));
       } catch (err) {
         console.error("Face blur failed:", err);
         // Fallback to original if processing fails
-        setImage(file);
+        setImageFile(file);
         setPreviewUrl(URL.createObjectURL(file));
       }
     }
@@ -82,10 +81,11 @@ export default function ReportPage() {
     setLoading(true);
     
     let uploadedImageUrl = null;
-    if (image) {
+    if (imageFile) {
+      setUploadingImage(true);
       try {
         const cloudinaryData = new FormData();
-        cloudinaryData.append('file', image);
+        cloudinaryData.append('file', imageFile);
         cloudinaryData.append('upload_preset', process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET!);
         const uploadRes = await fetch(
           `https://api.cloudinary.com/v1_1/${process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload`,
@@ -97,8 +97,10 @@ export default function ReportPage() {
         console.error('Image upload failed:', err);
         toast.error('Không thể tải ảnh lên. Vui lòng thử lại.');
         setLoading(false);
+        setUploadingImage(false);
         return;
       }
+      setUploadingImage(false);
     }
     
     try {
@@ -112,7 +114,6 @@ export default function ReportPage() {
           lat: formData.lat,
           lng: formData.lng,
           image_url: uploadedImageUrl,
-          user_id: userId, // Dùng ID thật từ Clerk
           force
         }),
       });
@@ -141,7 +142,7 @@ export default function ReportPage() {
         lng: '',
         manualAddress: '',
       });
-      setImage(null);
+      setImageFile(null);
       setPreviewUrl(null);
     } catch (error: unknown) {
       setLoading(false);
@@ -177,7 +178,7 @@ export default function ReportPage() {
                   <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
                   <button 
                     type="button" 
-                    onClick={() => { setImage(null); setPreviewUrl(null); }}
+                    onClick={() => { setImageFile(null); setPreviewUrl(null); }}
                     className="absolute top-2 right-2 bg-black/50 text-white p-2 rounded-full backdrop-blur-sm"
                   >
                     ✕
@@ -319,7 +320,7 @@ export default function ReportPage() {
               className="w-full flex items-center justify-center gap-2 p-4 rounded-xl bg-blue-600 text-white font-bold text-lg active:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-200 mt-8"
             >
               {loading ? <Loader2 className="w-6 h-6 animate-spin" /> : <Send className="w-6 h-6" />}
-              {loading ? 'Đang gửi...' : 'Gửi báo cáo'}
+              {uploadingImage ? 'Đang tải ảnh...' : loading ? 'Đang gửi...' : 'Gửi báo cáo'}
             </button>
           )}
           
