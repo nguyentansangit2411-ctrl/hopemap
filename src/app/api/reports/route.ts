@@ -1,15 +1,16 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// Initialize Supabase client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-// Use the service role key to bypass RLS in the server-side API,
-// as the user_id is provided in the request body.
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-
-const supabase = createClient(supabaseUrl, supabaseKey);
-
 export async function POST(req: Request) {
+  // Khởi tạo Supabase client BÊN TRONG function để tránh lỗi khi build trên Vercel
+  // do lúc build tĩnh (static generation), Vercel chưa load các biến môi trường này
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  
+  if (!supabaseUrl || !supabaseKey) {
+    return NextResponse.json({ error: 'Thiếu cấu hình Supabase trên Server' }, { status: 500 });
+  }
+  const supabase = createClient(supabaseUrl, supabaseKey);
   try {
     const body = await req.json();
     const { title, description, category, lat, lng, image_url, user_id } = body;
