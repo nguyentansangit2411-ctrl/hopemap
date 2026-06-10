@@ -102,9 +102,10 @@ export default function ReportPage() {
       });
       setImage(null);
       setPreviewUrl(null);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setLoading(false);
-      alert('Lỗi: ' + error.message);
+      const msg = error instanceof Error ? error.message : String(error);
+      alert('Lỗi: ' + msg);
     }
   };
 

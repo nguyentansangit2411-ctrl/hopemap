@@ -6,7 +6,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { createClient } from '@supabase/supabase-js';
 import Link from 'next/link';
-import { Plus, Navigation, Clock, Tag, Info } from 'lucide-react';
+import { Plus, Navigation, Clock, Tag } from 'lucide-react';
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
 
 // Default HCM City coordinates
@@ -87,9 +87,19 @@ function MapController({ center }: { center: [number, number] }) {
   return null;
 }
 
+interface Report {
+  id: string;
+  lat: number;
+  lng: number;
+  category: string;
+  title: string;
+  description: string;
+  created_at: string;
+}
+
 export default function Map() {
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
-  const [reports, setReports] = useState<any[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
   const [loadingLocation, setLoadingLocation] = useState(true);
 
   // 1. Get user location
