@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { Camera, MapPin, Send, Loader2 } from 'lucide-react';
 import { UserButton, useAuth } from '@clerk/nextjs';
+import NotificationBell from '@/components/NotificationBell';
+import toast from 'react-hot-toast';
 
 const CATEGORIES = [
   'Người vô gia cư',
@@ -40,7 +42,7 @@ export default function ReportPage() {
           setLocationLoading(false);
         },
         () => {
-          alert('Không thể lấy vị trí. Vui lòng bật GPS hoặc nhập thủ công.');
+          toast.error('Không thể lấy vị trí. Vui lòng bật GPS hoặc nhập thủ công.');
           setLocationLoading(false);
         },
         { enableHighAccuracy: true, timeout: 10000 }
@@ -51,23 +53,53 @@ export default function ReportPage() {
     }
   };
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      setImage(file);
-      setPreviewUrl(URL.createObjectURL(file));
+      try {
+        const { processAndBlurFaces } = await import('@/lib/imageUtils');
+        const blurredBlob = await processAndBlurFaces(file);
+        const blurredFile = new File([blurredBlob], file.name, { type: blurredBlob.type });
+        setImage(blurredFile);
+        setPreviewUrl(URL.createObjectURL(blurredBlob));
+      } catch (err) {
+        console.error("Face blur failed:", err);
+        // Fallback to original if processing fails
+        setImage(file);
+        setPreviewUrl(URL.createObjectURL(file));
+      }
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const [duplicateInfo, setDuplicateInfo] = useState<{ id: string } | null>(null);
+
+  const handleSubmit = async (e?: React.FormEvent, force: boolean = false) => {
+    if (e) e.preventDefault();
     if (!formData.category) {
-      alert('Vui lòng chọn phân loại');
+      toast.error('Vui lòng chọn phân loại');
       return;
     }
     setLoading(true);
     
-    // TODO: Upload image to Cloudinary (Tạm thời bỏ qua)
+    let uploadedImageUrl = null;
+    if (image) {
+      try {
+        const cloudinaryData = new FormData();
+        cloudinaryData.append('file', image);
+        cloudinaryData.append('upload_preset', process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET!);
+        const uploadRes = await fetch(
+          `https://api.cloudinary.com/v1_1/${process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload`,
+          { method: 'POST', body: cloudinaryData }
+        );
+        const data = await uploadRes.json();
+        uploadedImageUrl = data.secure_url;
+      } catch (err) {
+        console.error('Image upload failed:', err);
+        toast.error('Không thể tải ảnh lên. Vui lòng thử lại.');
+        setLoading(false);
+        return;
+      }
+    }
     
     try {
       const res = await fetch('/api/reports', {
@@ -79,10 +111,18 @@ export default function ReportPage() {
           category: formData.category,
           lat: formData.lat,
           lng: formData.lng,
-          image_url: null, // Chưa upload ảnh
+          image_url: uploadedImageUrl,
           user_id: userId, // Dùng ID thật từ Clerk
+          force
         }),
       });
+
+      if (res.status === 409) {
+        const data = await res.json();
+        setDuplicateInfo({ id: data.duplicateId });
+        setLoading(false);
+        return;
+      }
 
       if (!res.ok) {
         const errorData = await res.json();
@@ -90,7 +130,8 @@ export default function ReportPage() {
       }
 
       setLoading(false);
-      alert('Báo cáo thành công! Cảm ơn bạn.');
+      setDuplicateInfo(null);
+      toast.success('Báo cáo thành công! Cảm ơn bạn.');
       // reset form
       setFormData({
         title: '',
@@ -105,7 +146,7 @@ export default function ReportPage() {
     } catch (error: unknown) {
       setLoading(false);
       const msg = error instanceof Error ? error.message : String(error);
-      alert('Lỗi: ' + msg);
+      toast.error('Lỗi: ' + msg);
     }
   };
 
@@ -117,7 +158,10 @@ export default function ReportPage() {
           <h1 className="text-xl font-bold text-gray-900">Báo cáo hoàn cảnh</h1>
           <p className="text-sm text-gray-500 mt-1">Giúp đỡ những người quanh bạn</p>
         </div>
-        <UserButton />
+        <div className="flex items-center gap-2">
+          <NotificationBell />
+          <UserButton />
+        </div>
       </header>
 
       <main className="p-4 max-w-lg mx-auto">
@@ -240,15 +284,44 @@ export default function ReportPage() {
             />
           </section>
 
+          {/* Duplicate Warning */}
+          {duplicateInfo && (
+            <div className="bg-orange-50 border-l-4 border-orange-500 p-4 rounded-r-xl">
+              <p className="text-sm font-bold text-orange-800 mb-2">
+                Có vẻ hoàn cảnh này đã được báo cáo
+              </p>
+              <div className="flex flex-col gap-3">
+                <a 
+                  href={`/reports/${duplicateInfo.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-blue-600 font-semibold underline underline-offset-2"
+                >
+                  Xem báo cáo đã tồn tại
+                </a>
+                <button
+                  type="button"
+                  onClick={() => handleSubmit(undefined, true)}
+                  disabled={loading}
+                  className="w-full py-2 bg-orange-100 hover:bg-orange-200 text-orange-800 font-bold text-sm rounded-lg transition-colors border border-orange-200"
+                >
+                  Vẫn tiếp tục đăng báo cáo mới này
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Submit */}
-          <button
-            type="submit"
-            disabled={loading || !formData.lat || !formData.category}
-            className="w-full flex items-center justify-center gap-2 p-4 rounded-xl bg-blue-600 text-white font-bold text-lg active:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-200 mt-8"
-          >
-            {loading ? <Loader2 className="w-6 h-6 animate-spin" /> : <Send className="w-6 h-6" />}
-            {loading ? 'Đang gửi...' : 'Gửi báo cáo'}
-          </button>
+          {!duplicateInfo && (
+            <button
+              type="submit"
+              disabled={loading || !formData.lat || !formData.category}
+              className="w-full flex items-center justify-center gap-2 p-4 rounded-xl bg-blue-600 text-white font-bold text-lg active:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-200 mt-8"
+            >
+              {loading ? <Loader2 className="w-6 h-6 animate-spin" /> : <Send className="w-6 h-6" />}
+              {loading ? 'Đang gửi...' : 'Gửi báo cáo'}
+            </button>
+          )}
           
         </form>
       </main>

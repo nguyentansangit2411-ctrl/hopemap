@@ -6,8 +6,9 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { createClient } from '@supabase/supabase-js';
 import Link from 'next/link';
-import { Plus, Navigation, Clock, Tag } from 'lucide-react';
+import { Plus, Navigation, Clock, Tag, Loader2 } from 'lucide-react';
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
+import NotificationBell from './NotificationBell';
 
 // Default HCM City coordinates
 const DEFAULT_CENTER: [number, number] = [10.762622, 106.660172];
@@ -18,13 +19,13 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Custom Icons for categories using Leaflet DivIcon
-const createCustomIcon = (color: string, emoji: string) => {
+const createCustomIcon = (color: string, emoji: string, isPending: boolean = false) => {
   return new L.DivIcon({
     html: `
-      <div style="background-color: ${color}; width: 36px; height: 36px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.2);">
-        <span style="font-size: 18px;">${emoji}</span>
+      <div style="background-color: ${isPending ? '#f3f4f6' : color}; width: 36px; height: 36px; border-radius: 50%; border: 3px solid ${isPending ? color : 'white'}; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.2); opacity: ${isPending ? '0.8' : '1'};">
+        <span style="font-size: 18px; ${isPending ? 'filter: grayscale(50%);' : ''}">${emoji}</span>
       </div>
-      <div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 10px solid ${color}; position: absolute; bottom: -8px; left: 10px;"></div>
+      <div style="width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-top: 10px solid ${isPending ? color : color}; position: absolute; bottom: -8px; left: 10px; opacity: ${isPending ? '0.8' : '1'};"></div>
     `,
     className: 'custom-leaflet-icon',
     iconSize: [36, 46],
@@ -33,11 +34,15 @@ const createCustomIcon = (color: string, emoji: string) => {
   });
 };
 
-const CATEGORY_ICONS: Record<string, L.DivIcon> = {
-  'Người vô gia cư': createCustomIcon('#3b82f6', '🏠'), // Blue
-  'Cụ già bệnh': createCustomIcon('#ef4444', '❤️'),     // Red
-  'Trẻ em lang thang': createCustomIcon('#f59e0b', '🧸'), // Amber
-  'Khác': createCustomIcon('#6b7280', '📌'),             // Gray
+const getCategoryIcon = (category: string, isPending: boolean) => {
+  const map: Record<string, { color: string, emoji: string }> = {
+    'Người vô gia cư': { color: '#3b82f6', emoji: '🏠' },
+    'Cụ già bệnh': { color: '#ef4444', emoji: '❤️' },
+    'Trẻ em lang thang': { color: '#f59e0b', emoji: '🧸' },
+    'Khác': { color: '#6b7280', emoji: '📌' },
+  };
+  const config = map[category] || map['Khác'];
+  return createCustomIcon(config.color, config.emoji, isPending);
 };
 
 const USER_ICON = new L.DivIcon({
@@ -78,6 +83,22 @@ function timeAgo(dateString: string) {
   return `${diffInDays} ngày trước`;
 }
 
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string, color: string }> = {
+    'pending': { label: 'Chờ duyệt', color: 'bg-orange-100 text-orange-700' },
+    'community_verified': { label: 'Cộng đồng XN', color: 'bg-blue-100 text-blue-700' },
+    'field_verified': { label: 'Đã khảo sát', color: 'bg-indigo-100 text-indigo-700' },
+    'helped': { label: 'Đã được giúp', color: 'bg-green-100 text-green-700' },
+    'closed': { label: 'Đã đóng', color: 'bg-gray-100 text-gray-700' },
+  };
+  const config = map[status] || map['pending'];
+  return (
+    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${config.color} shrink-0`}>
+      {config.label}
+    </span>
+  );
+}
+
 // Map center controller component
 function MapController({ center }: { center: [number, number] }) {
   const map = useMap();
@@ -91,16 +112,19 @@ interface Report {
   id: string;
   lat: number;
   lng: number;
-  category: string;
+  category: 'người vô gia cư' | 'cụ già bệnh' | 'trẻ em lang thang' | 'khác';
+  status: string;
   title: string;
   description: string;
   created_at: string;
+  verifications?: [{ count: number }];
 }
 
 export default function Map() {
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [loadingLocation, setLoadingLocation] = useState(true);
+  const [loadingReports, setLoadingReports] = useState(true);
 
   // 1. Get user location
   useEffect(() => {
@@ -124,15 +148,16 @@ export default function Map() {
   // 2. Fetch reports from Supabase (filter within 5km if user location exists)
   useEffect(() => {
     async function fetchReports() {
-      // For MVP without PostGIS RPC, we fetch field_verified reports and filter in JS
+      // Fetch pending, community_verified, field_verified, and helped reports
       const { data, error } = await supabase
         .from('reports')
-        .select('*')
-        .eq('status', 'field_verified')
+        .select('*, verifications(count)')
+        .in('status', ['pending', 'community_verified', 'field_verified', 'helped'])
         .order('created_at', { ascending: false });
 
       if (error) {
         console.error('Error fetching reports:', error);
+        setLoadingReports(false);
         return;
       }
 
@@ -148,6 +173,7 @@ export default function Map() {
           // If no GPS, just show top 50 recent verified reports globally
           setReports(data.slice(0, 50));
         }
+        setLoadingReports(false);
       }
     }
 
@@ -185,29 +211,39 @@ export default function Map() {
 
         {/* Report Markers */}
         {reports.map((report) => {
-          const icon = CATEGORY_ICONS[report.category] || CATEGORY_ICONS['Khác'];
+          const isPending = report.status === 'pending';
+          const icon = getCategoryIcon(report.category, isPending);
+          const upvotes = report.verifications?.[0]?.count || 0;
           return (
             <Marker key={report.id} position={[report.lat, report.lng]} icon={icon}>
               <Popup className="font-sans min-w-[200px] !p-0 overflow-hidden rounded-xl">
                 <div className="p-3">
                   <div className="flex items-start gap-2 mb-2">
-                    <span className="bg-green-100 text-green-700 text-xs px-2 py-1 rounded-full font-bold uppercase tracking-wider flex-shrink-0">
-                      Đã xác minh
-                    </span>
+                    <StatusBadge status={report.status} />
+                    {upvotes > 0 && (
+                      <span className="text-[10px] font-bold bg-purple-100 text-purple-700 px-2 py-1 rounded-full shrink-0 flex items-center gap-1">
+                        👍 {upvotes}
+                      </span>
+                    )}
                     <span className="text-xs text-gray-500 flex items-center gap-1 ml-auto shrink-0">
                       <Clock className="w-3 h-3" />
                       {timeAgo(report.created_at)}
                     </span>
                   </div>
                   
-                  <h3 className="font-bold text-gray-900 text-base mb-1 mt-1 leading-tight">{report.title}</h3>
-                  <p className="text-sm text-gray-600 line-clamp-3 mb-2 leading-relaxed">
+                  <h3 className="font-bold text-gray-900 text-base mb-1 mt-1 leading-tight line-clamp-1">{report.title}</h3>
+                  <p className="text-sm text-gray-600 line-clamp-2 mb-3 leading-relaxed">
                     {report.description || 'Không có mô tả chi tiết'}
                   </p>
                   
-                  <div className="flex items-center gap-1 text-xs font-medium text-blue-600 bg-blue-50 w-fit px-2 py-1 rounded-lg">
-                    <Tag className="w-3 h-3" />
-                    {report.category}
+                  <div className="flex items-center justify-between border-t border-gray-100 pt-3">
+                    <div className="flex items-center gap-1 text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded-md">
+                      <Tag className="w-3 h-3" />
+                      {report.category}
+                    </div>
+                    <Link href={`/reports/${report.id}`} className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors">
+                      Xem & Giúp
+                    </Link>
                   </div>
                 </div>
               </Popup>
@@ -232,10 +268,11 @@ export default function Map() {
                </div>
             )}
             <SignedIn>
+              <NotificationBell />
               <UserButton />
             </SignedIn>
             <SignedOut>
-              <SignInButton mode="modal">
+              <SignInButton mode="modal" fallbackRedirectUrl="/report">
                 <button className="text-sm font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100">
                   Đăng nhập
                 </button>
@@ -244,6 +281,27 @@ export default function Map() {
           </div>
         </div>
       </div>
+
+      {/* Loading Skeleton */}
+      {loadingReports && (
+        <div className="absolute inset-0 z-[500] bg-white/50 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="bg-white p-6 rounded-2xl shadow-xl flex flex-col items-center gap-3">
+            <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+            <p className="text-gray-600 font-medium">Đang tải dữ liệu bản đồ...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {!loadingReports && reports.length === 0 && (
+        <div className="absolute inset-0 z-[500] flex items-center justify-center pointer-events-none">
+          <div className="bg-white/90 backdrop-blur-md p-6 rounded-3xl shadow-2xl max-w-[80%] text-center border border-gray-100 flex flex-col items-center gap-2">
+            <div className="text-4xl mb-2">🌍</div>
+            <h2 className="font-bold text-gray-900">Chưa có hoàn cảnh nào gần đây</h2>
+            <p className="text-sm text-gray-500">Bạn có thể là người đầu tiên báo cáo và giúp đỡ mọi người xung quanh!</p>
+          </div>
+        </div>
+      )}
 
       {/* Floating Action Button */}
       <div className="absolute bottom-8 left-0 right-0 flex justify-center z-[1000] pointer-events-none">
